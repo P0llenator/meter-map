@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Admin Map - Draw & Save Lines</title>
+  <meta charset="utf-8" />
+  <style>
+    #map {
+      height: 100vh;
+      width: 100%;
+    }
+    #clear-btn {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 5;
+      background-color: #4285F4;
+      color: white;
+      border: none;
+      border-radius: 3px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    #clear-btn:hover {
+      background-color: #357ae8;
+    }
+  </style>
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBQMlbuZJ2qOTUMmzlROB7Zjw2sTdY5hdE&libraries=drawing"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.0.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.0.0/firebase-database-compat.js"></script>
+</head>
+<body>
+  <button id="clear-btn">Clear All Lines</button>
+  <div id="map"></div>
+
+  <script>
+    // Firebase config & init
+    const firebaseConfig = {
+      apiKey: "AIzaSyA3A66rXIFQF_Q3JyO71wTeez45cDa8JxE",
+      authDomain: "mymaps-88882.firebaseapp.com",
+      databaseURL: "https://mymaps-88882-default-rtdb.firebaseio.com",
+      projectId: "mymaps-88882",
+      storageBucket: "mymaps-88882.appspot.com",
+      messagingSenderId: "1073848094921",
+      appId: "1:1073848094921:web:06d32e78839996d858bd18"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    let map;
+    let drawingManager;
+    let allLines = []; // Store google.maps.Polyline objects
+
+    function initMap() {
+      map = new google.maps.Map(document.getElementById('map'), {
+        zoom: 10,
+        center: { lat: 31.963158, lng: 35.930359 },
+      });
+
+      drawingManager = new google.maps.drawing.DrawingManager({
+        drawingMode: google.maps.drawing.OverlayType.POLYLINE,
+        drawingControl: true,
+        drawingControlOptions: {
+          position: google.maps.ControlPosition.TOP_CENTER,
+          drawingModes: [google.maps.drawing.OverlayType.POLYLINE]
+        },
+        polylineOptions: {
+          strokeColor: '#FF0000',
+          strokeWeight: 3,
+          clickable: true,
+          editable: true,
+          zIndex: 1
+        }
+      });
+      drawingManager.setMap(map);
+
+      // Load existing lines from Firebase
+      db.ref('lines').on('value', snapshot => {
+        clearAllLinesFromMap();
+        const lines = snapshot.val();
+        if (!lines) return;
+        Object.entries(lines).forEach(([key, lineData]) => {
+          const polyline = new google.maps.Polyline({
+            path: lineData.path,
+            strokeColor: '#FF0000',
+            strokeWeight: 3,
+            editable: true,
+            map: map,
+          });
+          polyline.firebaseKey = key;
+          setupPolylineListeners(polyline);
+          allLines.push(polyline);
+        });
+      });
+
+      // When user finishes drawing a new line
+      google.maps.event.addListener(drawingManager, 'polylinecomplete', polyline => {
+        polyline.firebaseKey = null;
+        allLines.push(polyline);
+        setupPolylineListeners(polyline);
+        savePolylineToFirebase(polyline);
+      });
+
+      // Clear all lines button
+      document.getElementById('clear-btn').onclick = () => {
+        if(confirm('Delete all lines? This cannot be undone.')) {
+          db.ref('lines').remove();
+          clearAllLinesFromMap();
+        }
+      };
+    }
+
+    function setupPolylineListeners(polyline) {
+      // Save changes when path changes (editing)
+      google.maps.event.addListener(polyline.getPath(), 'set_at', () => savePolylineToFirebase(polyline));
+      google.maps.event.addListener(polyline.getPath(), 'insert_at', () => savePolylineToFirebase(polyline));
+      google.maps.event.addListener(polyline.getPath(), 'remove_at', () => savePolylineToFirebase(polyline));
+
+      // Optional: Add snapping endpoints logic here if needed
+
+      // Right click to delete this line
+      polyline.addListener('rightclick', (event) => {
+        if(event.vertex !== undefined) {
+          polyline.getPath().removeAt(event.vertex);
+        } else {
+          if(confirm('Delete this line?')) {
+            removePolylineFromFirebase(polyline);
+            polyline.setMap(null);
+            allLines = allLines.filter(l => l !== polyline);
+          }
+        }
+      });
+    }
+
+    function savePolylineToFirebase(polyline) {
+      const path = polyline.getPath().getArray().map(latlng => ({
+        lat: latlng.lat(),
+        lng: latlng.lng()
+      }));
+
+      if(polyline.firebaseKey) {
+        // Update existing line
+        db.ref('lines/' + polyline.firebaseKey).set({ path });
+      } else {
+        // Create new line
+        const newRef = db.ref('lines').push();
+        polyline.firebaseKey = newRef.key;
+        newRef.set({ path });
+      }
+    }
+
+    function removePolylineFromFirebase(polyline) {
+      if(polyline.firebaseKey) {
+        db.ref('lines/' + polyline.firebaseKey).remove();
+      }
+    }
+
+    function clearAllLinesFromMap() {
+      allLines.forEach(line => line.setMap(null));
+      allLines = [];
+    }
+
+    window.onload = initMap;
+  </script>
+</body>
+</html>
