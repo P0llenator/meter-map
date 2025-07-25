@@ -1,40 +1,55 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Admin Map - Draw & Save Lines</title>
+  <title>Admin Map - Draw and Save</title>
   <meta charset="utf-8" />
   <style>
-    #map {
-      height: 100vh;
-      width: 100%;
+    html, body, #map {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      background: #121212;
     }
-    #clear-btn {
+
+    .floating-buttons {
       position: absolute;
       top: 10px;
       left: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
       z-index: 5;
-      background-color: #4285F4;
-      color: white;
-      border: none;
-      border-radius: 3px;
-      padding: 8px 12px;
-      cursor: pointer;
-      font-size: 14px;
     }
-    #clear-btn:hover {
-      background-color: #357ae8;
+
+    .floating-buttons button {
+      background: #1f1f1f;
+      color: #fff;
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 8px 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .floating-buttons button:hover {
+      background: #333;
     }
   </style>
-  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBQMlbuZJ2qOTUMmzlROB7Zjw2sTdY5hdE&libraries=drawing"></script>
-  <script src="https://www.gstatic.com/firebasejs/12.0.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/12.0.0/firebase-database-compat.js"></script>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-database-compat.js"></script>
+
+  <!-- Google Maps + Drawing -->
+  <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=drawing"></script>
 </head>
 <body>
-  <button id="clear-btn">Clear All Lines</button>
+  <div class="floating-buttons">
+    <button onclick="clearLines()">Clear All Lines</button>
+  </div>
   <div id="map"></div>
 
   <script>
-    // Firebase config
     const firebaseConfig = {
       apiKey: "AIzaSyA3A66rXIFQF_Q3JyO71wTeez45cDa8JxE",
       authDomain: "mymaps-88882.firebaseapp.com",
@@ -44,28 +59,19 @@
       messagingSenderId: "1073848094921",
       appId: "1:1073848094921:web:06d32e78839996d858bd18"
     };
+
     firebase.initializeApp(firebaseConfig);
     const db = firebase.database();
 
     let map;
     let drawingManager;
-    let allLines = [];
+    const drawnPolylines = [];
 
-    const snFilledIcon = {
-      path: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z M10 16.5l-4-4 1.41-1.41L10 13.67l6.59-6.59L18 8.5l-8 8z",
-      fillColor: "#FFD700",
-      fillOpacity: 1,
-      strokeColor: "#1E90FF",
-      strokeWeight: 3,
-      scale: 1.5,
-      anchor: new google.maps.Point(12, 12),
-      strokeOpacity: 1,
-    };
-
-    async function initMap() {
-      map = new google.maps.Map(document.getElementById('map'), {
-        zoom: 10,
+    function initMap() {
+      map = new google.maps.Map(document.getElementById("map"), {
         center: { lat: 31.963158, lng: 35.930359 },
+        zoom: 11,
+        styles: [ { elementType: 'geometry', stylers: [ { color: '#242f3e' } ] }, { elementType: 'labels.text.stroke', stylers: [ { color: '#242f3e' } ] }, { elementType: 'labels.text.fill', stylers: [ { color: '#746855' } ] }, { featureType: 'administrative.locality', elementType: 'labels.text.fill', stylers: [ { color: '#d59563' } ] }, { featureType: 'poi', elementType: 'labels.text.fill', stylers: [ { color: '#d59563' } ] }, { featureType: 'poi.park', elementType: 'geometry', stylers: [ { color: '#263c3f' } ] }, { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [ { color: '#6b9a76' } ] }, { featureType: 'road', elementType: 'geometry', stylers: [ { color: '#38414e' } ] }, { featureType: 'road', elementType: 'geometry.stroke', stylers: [ { color: '#212a37' } ] }, { featureType: 'road', elementType: 'labels.text.fill', stylers: [ { color: '#9ca5b3' } ] }, { featureType: 'road.highway', elementType: 'geometry', stylers: [ { color: '#746855' } ] }, { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [ { color: '#1f2835' } ] }, { featureType: 'road.highway', elementType: 'labels.text.fill', stylers: [ { color: '#f3d19c' } ] }, { featureType: 'transit', elementType: 'geometry', stylers: [ { color: '#2f3948' } ] }, { featureType: 'transit.station', elementType: 'labels.text.fill', stylers: [ { color: '#d59563' } ] }, { featureType: 'water', elementType: 'geometry', stylers: [ { color: '#17263c' } ] }, { featureType: 'water', elementType: 'labels.text.fill', stylers: [ { color: '#515c6d' } ] }, { featureType: 'water', elementType: 'labels.text.stroke', stylers: [ { color: '#17263c' } ] } ]
       });
 
       drawingManager = new google.maps.drawing.DrawingManager({
@@ -73,126 +79,50 @@
         drawingControl: true,
         drawingControlOptions: {
           position: google.maps.ControlPosition.TOP_CENTER,
-          drawingModes: [google.maps.drawing.OverlayType.POLYLINE]
+          drawingModes: ['polyline']
         },
         polylineOptions: {
-          strokeColor: '#FF0000',
-          strokeWeight: 3,
-          clickable: true,
-          editable: true,
-          zIndex: 1
+          strokeColor: "#FFD700",
+          strokeOpacity: 1.0,
+          strokeWeight: 4
         }
       });
+
       drawingManager.setMap(map);
 
-      // Fetch Google Sheet markers
-      const response = await fetch("https://opensheet.elk.sh/1PxbF8e9cKuKCaS6ta--h7GF08O91O-ORCha5DUBklXI/Sheet1");
-      const rows = await response.json();
-      rows.forEach(row => {
-        const lat = parseFloat(row.Latitude);
-        const lng = parseFloat(row.Longitude);
-        const sn = row["جلب ONU SN (مهم وضروري)"];
-
-        if (!lat || !lng) return;
-
-        const content = `
-          <div>
-            <strong>${row["اسم المشترك"] || "No Name"}</strong><br/>
-            ${Object.entries(row)
-              .slice(0, 11)
-              .map(([key, val]) => `<b>${key}:</b> ${val || '-'}<br/>`)
-              .join('')}
-            <button onclick="window.open('https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}', '_blank')">
-              Get Directions
-            </button>
-          </div>
-        `;
-
-        const marker = new google.maps.Marker({
-          position: { lat, lng },
-          map: map,
-          icon: sn ? snFilledIcon : null,
-        });
-
-        const info = new google.maps.InfoWindow({ content });
-        marker.addListener("click", () => info.open(map, marker));
+      google.maps.event.addListener(drawingManager, 'polylinecomplete', function(polyline) {
+        const path = polyline.getPath().getArray().map(p => ({ lat: p.lat(), lng: p.lng() }));
+        drawnPolylines.push(polyline);
+        savePolyline(path);
       });
 
-      // Load saved lines
-      db.ref('lines').on('value', snapshot => {
-        clearAllLinesFromMap();
-        const lines = snapshot.val();
-        if (!lines) return;
-        Object.entries(lines).forEach(([key, lineData]) => {
+      loadLines();
+    }
+
+    function savePolyline(path) {
+      const id = Date.now();
+      db.ref("lines/" + id).set({ path });
+    }
+
+    function loadLines() {
+      db.ref("lines").on("value", snapshot => {
+        const data = snapshot.val();
+        if (!data) return;
+        Object.values(data).forEach(line => {
           const polyline = new google.maps.Polyline({
-            path: lineData.path,
-            strokeColor: '#FF0000',
-            strokeWeight: 3,
-            editable: true,
+            path: line.path,
             map: map,
+            strokeColor: "#FFD700",
+            strokeOpacity: 1.0,
+            strokeWeight: 4
           });
-          polyline.firebaseKey = key;
-          setupPolylineListeners(polyline);
-          allLines.push(polyline);
         });
       });
-
-      google.maps.event.addListener(drawingManager, 'polylinecomplete', polyline => {
-        polyline.firebaseKey = null;
-        allLines.push(polyline);
-        setupPolylineListeners(polyline);
-        savePolylineToFirebase(polyline);
-      });
-
-      document.getElementById('clear-btn').onclick = () => {
-        if (confirm('Delete all lines? This cannot be undone.')) {
-          db.ref('lines').remove();
-          clearAllLinesFromMap();
-        }
-      };
     }
 
-    function setupPolylineListeners(polyline) {
-      google.maps.event.addListener(polyline.getPath(), 'set_at', () => savePolylineToFirebase(polyline));
-      google.maps.event.addListener(polyline.getPath(), 'insert_at', () => savePolylineToFirebase(polyline));
-      google.maps.event.addListener(polyline.getPath(), 'remove_at', () => savePolylineToFirebase(polyline));
-
-      polyline.addListener('rightclick', (event) => {
-        if (event.vertex !== undefined) {
-          polyline.getPath().removeAt(event.vertex);
-        } else {
-          if (confirm('Delete this line?')) {
-            removePolylineFromFirebase(polyline);
-            polyline.setMap(null);
-            allLines = allLines.filter(l => l !== polyline);
-          }
-        }
-      });
-    }
-
-    function savePolylineToFirebase(polyline) {
-      const path = polyline.getPath().getArray().map(latlng => ({
-        lat: latlng.lat(),
-        lng: latlng.lng()
-      }));
-      if (polyline.firebaseKey) {
-        db.ref('lines/' + polyline.firebaseKey).set({ path });
-      } else {
-        const newRef = db.ref('lines').push();
-        polyline.firebaseKey = newRef.key;
-        newRef.set({ path });
-      }
-    }
-
-    function removePolylineFromFirebase(polyline) {
-      if (polyline.firebaseKey) {
-        db.ref('lines/' + polyline.firebaseKey).remove();
-      }
-    }
-
-    function clearAllLinesFromMap() {
-      allLines.forEach(line => line.setMap(null));
-      allLines = [];
+    function clearLines() {
+      db.ref("lines").remove();
+      window.location.reload();
     }
 
     window.onload = initMap;
