@@ -1,26 +1,53 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Google Sheet Dynamic Map with Firebase Lines</title>
-  <meta charset="utf-8" />
+  <title>MyMap View-Only with Sheet Markers & Firebase Lines</title>
+  <meta charset="utf-8">
   <style>
     #map {
       height: 100vh;
       width: 100%;
     }
-    button {
-      margin-top: 8px;
-      padding: 6px 10px;
-      background-color: #4285F4;
-      color: white;
-      border: none;
-      border-radius: 3px;
-      cursor: pointer;
+
+    .line-label {
+      position: absolute;
+      background: #FFD700;
+      color: #000;
+      padding: 2px 6px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: bold;
+      white-space: nowrap;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+      transform: translate(-50%, -100%);
     }
-    button:hover {
-      background-color: #357ae8;
+
+    .line-label::after {
+      content: "";
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      margin-left: -5px;
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 6px solid #FFD700;
+    }
+
+    .pin-number {
+      background: #000;
+      color: #fff;
+      font-size: 10px;
+      font-weight: bold;
+      padding: 2px 4px;
+      border-radius: 3px;
+      position: absolute;
+      transform: translate(-50%, -150%);
+      white-space: nowrap;
     }
   </style>
+
   <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBQMlbuZJ2qOTUMmzlROB7Zjw2sTdY5hdE"></script>
   <script src="https://www.gstatic.com/firebasejs/12.0.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/12.0.0/firebase-database-compat.js"></script>
@@ -29,7 +56,6 @@
   <div id="map"></div>
 
   <script>
-    // Firebase setup
     const firebaseConfig = {
       apiKey: "AIzaSyA3A66rXIFQF_Q3JyO71wTeez45cDa8JxE",
       authDomain: "mymaps-88882.firebaseapp.com",
@@ -39,81 +65,161 @@
       messagingSenderId: "1073848094921",
       appId: "1:1073848094921:web:06d32e78839996d858bd18"
     };
+
     firebase.initializeApp(firebaseConfig);
     const db = firebase.database();
 
-    const defaultIcon = null;
-    const snFilledIcon = {
+    let map;
+    let openInfoWindow = null;
+    let allLabels = [];
+
+   const snFilledIcon = {
       path: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z M10 16.5l-4-4 1.41-1.41L10 13.67l6.59-6.59L18 8.5l-8 8z",
       fillColor: "#FFD700",
       fillOpacity: 1,
       strokeColor: "#1E90FF",
       strokeWeight: 3,
-      scale: 1.5,
+      scale: 1.0,
       anchor: new google.maps.Point(12, 12),
       strokeOpacity: 1,
+};
+
+    const defaultIcon = {
+      url: "https://maps.google.com/mapfiles/ms/icons/red-dot.png",
+      scaledSize: new google.maps.Size(28, 28)
     };
 
-    async function initMap() {
+    class PolylineLabel extends google.maps.OverlayView {
+      constructor(map, polyline, text = 'Line') {
+        super();
+        this.map = map;
+        this.polyline = polyline;
+        this.text = text;
+        this.div = null;
+        this.setMap(map);
+      }
+
+      onAdd() {
+        this.div = document.createElement('div');
+        this.div.className = 'line-label';
+        this.div.innerText = this.text;
+        this.getPanes().overlayMouseTarget.appendChild(this.div);
+      }
+
+      draw() {
+        if (!this.div || !this.polyline) return;
+        const path = this.polyline.getPath();
+        if (!path.getLength()) return;
+        const midIndex = Math.floor(path.getLength() / 2);
+        const pos = this.getProjection().fromLatLngToDivPixel(path.getAt(midIndex));
+        this.div.style.left = `${pos.x}px`;
+        this.div.style.top = `${pos.y}px`;
+      }
+
+      onRemove() {
+        if (this.div) {
+          this.div.remove();
+          this.div = null;
+        }
+      }
+    }
+
+    function createLabelForLine(polyline, text) {
+      const label = new PolylineLabel(map, polyline, text);
+      allLabels.push(label);
+    }
+
+    function createPinLabel(map, latLng, text) {
+      const div = document.createElement('div');
+      div.className = 'pin-number';
+      div.textContent = text;
+
+      const overlay = new google.maps.OverlayView();
+      overlay.onAdd = function () {
+        const panes = this.getPanes();
+        panes.overlayMouseTarget.appendChild(div);
+      };
+      overlay.draw = function () {
+        const point = this.getProjection().fromLatLngToDivPixel(latLng);
+        if (point) {
+          div.style.left = `${point.x}px`;
+          div.style.top = `${point.y}px`;
+        }
+      };
+      overlay.onRemove = function () {
+        div.remove();
+      };
+
+      overlay.setMap(map);
+    }
+
+    async function loadMapData() {
+      if (!map) {
+        map = new google.maps.Map(document.getElementById("map"), {
+          zoom: 11,
+          center: { lat: 31.963158, lng: 35.930359 }
+        });
+      }
+
       const response = await fetch("https://opensheet.elk.sh/1PxbF8e9cKuKCaS6ta--h7GF08O91O-ORCha5DUBklXI/Sheet1");
       const rows = await response.json();
 
-      const map = new google.maps.Map(document.getElementById("map"), {
-        zoom: 10,
-        center: { lat: 31.963158, lng: 35.930359 },
-      });
-
-      // Plot markers from Google Sheet
       rows.forEach(row => {
         const lat = parseFloat(row.Latitude);
         const lng = parseFloat(row.Longitude);
-        const sn = row["جلب ONU SN (مهم وضروري)"];
-
         if (!lat || !lng) return;
-
-        const content = `
-          <div>
-            <strong>${row["اسم المشترك"] || "No Name"}</strong><br/>
-            ${Object.entries(row)
-              .slice(0, 11)
-              .map(([key, val]) => `<b>${key}:</b> ${val || '-'}<br/>`)
-              .join('')}
-            <button onclick="window.open('https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}', '_blank')">
-              Get Directions
-            </button>
-          </div>
-        `;
 
         const marker = new google.maps.Marker({
           position: { lat, lng },
-          map: map,
-          icon: sn ? snFilledIcon : defaultIcon,
+          map,
+          icon: row["جلب ONU SN (مهم وضروري)"] ? snFilledIcon : defaultIcon,
         });
 
-        const info = new google.maps.InfoWindow({ content });
-        marker.addListener("click", () => info.open(map, marker));
+        const infoContent = `
+          <div style="max-width: 250px">
+            <strong>${row["اسم المشترك"] || "No Name"}</strong><br/>
+            ${Object.entries(row).slice(0, 10).map(([k, v]) => `<b>${k}:</b> ${v || '-'}<br/>`).join("")}
+            <button onclick="window.open('https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}')">Directions</button>
+          </div>`;
+
+        const infoWindow = new google.maps.InfoWindow({ content: infoContent });
+
+        marker.addListener("click", () => {
+          if (openInfoWindow) openInfoWindow.close();
+          infoWindow.open(map, marker);
+          openInfoWindow = infoWindow;
+        });
+
+        if (row["No"]) {
+          createPinLabel(map, { lat, lng }, row["No"]);
+        }
       });
 
-      // Load saved lines from Firebase
-      db.ref('lines').on('value', snapshot => {
-        const lines = snapshot.val();
+      // Clear old labels
+      allLabels.forEach(l => l.setMap(null));
+      allLabels = [];
+
+      // Load polylines from Firebase
+      db.ref("lines").once("value", snap => {
+        const lines = snap.val();
         if (!lines) return;
 
         Object.values(lines).forEach(line => {
           const polyline = new google.maps.Polyline({
             path: line.path,
             geodesic: true,
-            strokeColor: '#FF0000',
+            strokeColor: "#FFD700",
             strokeOpacity: 1.0,
-            strokeWeight: 2,
+            strokeWeight: 3,
             map: map,
           });
+          createLabelForLine(polyline, line.label);
         });
       });
     }
 
-    initMap();
-    setInterval(initMap, 60000);
+    loadMapData();
+    setInterval(loadMapData, 60000);
   </script>
 </body>
 </html>
