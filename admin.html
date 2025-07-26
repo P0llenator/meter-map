@@ -1,19 +1,17 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Admin Map - Draw & Save Lines</title>
+  <title>Admin Map - Draw & Save Lines with Collar Labels</title>
   <meta charset="utf-8" />
   <style>
     html, body, #map {
       height: 100%;
-      margin: 0;
-      padding: 0;
+      margin: 0; padding: 0;
       background: #121212;
     }
     .floating-buttons {
       position: absolute;
-      top: 10px;
-      left: 10px;
+      top: 10px; left: 10px;
       display: flex;
       flex-direction: column;
       gap: 10px;
@@ -30,6 +28,33 @@
     }
     .floating-buttons button:hover {
       background: #333;
+    }
+    /* Collar label styling */
+    .label-tag {
+      position: absolute;
+      background: #FFD700;
+      color: #000;
+      border-radius: 12px;
+      padding: 2px 8px;
+      font-weight: bold;
+      font-size: 12px;
+      white-space: nowrap;
+      cursor: pointer;
+      box-shadow: 0 0 4px rgba(0,0,0,0.6);
+      user-select: none;
+      /* Triangle collar pointer */
+    }
+    .label-tag::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 100%;
+      transform: translateX(-50%);
+      width: 0;
+      height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-top: 6px solid #b38600;
     }
   </style>
 
@@ -63,21 +88,174 @@
     let map;
     let drawingManager;
     let allLines = [];
+    let allLabels = [];
     let allMarkers = [];
+    let openInfoWindow = null;
 
     const snFilledIcon = {
       path: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z M10 16.5l-4-4 1.41-1.41L10 13.67l6.59-6.59L18 8.5l-8 8z",
-      fillColor: "#FFD700",
+      fillColor: "#1E90FF",
       fillOpacity: 1,
-      strokeColor: "#1E90FF",
+      strokeColor: "#FFD700",
       strokeWeight: 3,
-      scale: 1.5,
+      scale: 1.0,
       anchor: new google.maps.Point(12, 12),
       strokeOpacity: 1,
     };
+    const defaultSmallIcon = {
+      url: "https://maps.google.com/mapfiles/ms/icons/red-dot.png",
+      scaledSize: new google.maps.Size(24, 24),
+      anchor: new google.maps.Point(12, 40),
+    };
+
+    function clearAllLabels() {
+      allLabels.forEach(label => label.setMap(null));
+      allLabels = [];
+    }
+
+    // Collar label attached to first vertex
+    class PolylineLabel extends google.maps.OverlayView {
+      constructor(map, polyline, text = 'Name') {
+        super();
+        this.map = map;
+        this.polyline = polyline;
+        this.text = text;
+        this.div = null;
+        this.setMap(map);
+      }
+
+      onAdd() {
+        this.div = document.createElement('div');
+        this.div.className = 'label-tag';
+        this.div.innerText = this.text;
+
+        // Stop map dragging when interacting with label
+        this.div.addEventListener('mousedown', e => e.stopPropagation());
+        this.div.addEventListener('touchstart', e => e.stopPropagation());
+
+        // Click to rename or delete line
+        this.div.addEventListener('click', () => {
+          const newLabel = prompt('Enter new label (empty to delete line):', this.text);
+          if (newLabel === null) return; // Cancelled
+          if (newLabel.trim() === '') {
+            if (confirm('Delete this line?')) {
+              removePolylineFromFirebase(this.polyline);
+              this.polyline.setMap(null);
+              this.setMap(null);
+              allLines = allLines.filter(l => l !== this.polyline);
+              allLabels = allLabels.filter(l => l !== this);
+            }
+          } else {
+            this.text = newLabel.trim();
+            this.div.innerText = this.text;
+            this.polyline.labelText = this.text;
+            savePolylineToFirebase(this.polyline);
+          }
+        });
+
+        this.getPanes().overlayMouseTarget.appendChild(this.div);
+      }
+
+      draw() {
+        if (!this.div) return;
+        const path = this.polyline.getPath();
+        if (path.getLength() === 0) return;
+
+        const vertexPos = path.getAt(0);
+        const projection = this.getProjection();
+        if (!projection) return;
+
+        const pos = projection.fromLatLngToDivPixel(vertexPos);
+
+        // Position label just below vertex, centered horizontally
+        this.div.style.left = (pos.x - this.div.offsetWidth / 2) + 'px';
+        this.div.style.top = (pos.y + 12) + 'px'; // 12px below vertex
+      }
+
+      onRemove() {
+        if (this.div) {
+          this.div.parentNode.removeChild(this.div);
+          this.div = null;
+        }
+      }
+    }
+
+    function createLabelForLine(polyline, text = 'Name') {
+      if (polyline.labelText) {
+        text = polyline.labelText;
+      }
+      return new PolylineLabel(map, polyline, text);
+    }
+
+    function setupPolylineListeners(polyline, label) {
+      // Save and redraw label on path changes
+      google.maps.event.addListener(polyline.getPath(), 'set_at', () => {
+        savePolylineToFirebase(polyline);
+        label.draw();
+      });
+      google.maps.event.addListener(polyline.getPath(), 'insert_at', () => {
+        savePolylineToFirebase(polyline);
+        label.draw();
+      });
+      google.maps.event.addListener(polyline.getPath(), 'remove_at', () => {
+        savePolylineToFirebase(polyline);
+        label.draw();
+      });
+
+      polyline.setOptions({ draggable: true });
+
+      polyline.addListener('dragend', () => {
+        savePolylineToFirebase(polyline);
+        label.draw();
+      });
+
+      polyline.addListener('rightclick', (event) => {
+        if (event.vertex !== undefined) {
+          polyline.getPath().removeAt(event.vertex);
+        } else {
+          if (confirm('Delete this line?')) {
+            removePolylineFromFirebase(polyline);
+            polyline.setMap(null);
+            if(label) label.setMap(null);
+            allLines = allLines.filter(l => l !== polyline);
+            allLabels = allLabels.filter(l => l !== label);
+          }
+        }
+      });
+    }
+
+    function savePolylineToFirebase(polyline) {
+      const path = polyline.getPath().getArray().map(latlng => ({
+        lat: latlng.lat(),
+        lng: latlng.lng()
+      }));
+
+      const labelText = polyline.labelText || 'Unnamed Line';
+
+      const data = { path, label: labelText };
+
+      if (polyline.firebaseKey) {
+        db.ref('lines/' + polyline.firebaseKey).set(data);
+      } else {
+        const newRef = db.ref('lines').push();
+        polyline.firebaseKey = newRef.key;
+        db.ref('lines/' + polyline.firebaseKey).set(data);
+      }
+    }
+
+    function removePolylineFromFirebase(polyline) {
+      if (polyline.firebaseKey) {
+        db.ref('lines/' + polyline.firebaseKey).remove();
+      }
+    }
+
+    function clearAllLinesFromMap() {
+      allLines.forEach(line => line.setMap(null));
+      allLines = [];
+      clearAllLabels();
+    }
 
     async function loadMarkersFromSheet() {
-      // Clear old markers
       allMarkers.forEach(m => m.setMap(null));
       allMarkers = [];
 
@@ -102,64 +280,25 @@
         const marker = new google.maps.Marker({
           position: { lat, lng },
           map: map,
-          icon: row["جلب ONU SN (مهم وضروري)"] ? snFilledIcon : null,
+          icon: row["جلب ONU SN (مهم وضروري)"] ? snFilledIcon : defaultSmallIcon,
         });
 
         const info = new google.maps.InfoWindow({ content });
-        marker.addListener("click", () => info.open(map, marker));
+        marker.addListener("click", () => {
+          if (openInfoWindow) openInfoWindow.close();
+          info.open(map, marker);
+          openInfoWindow = info;
+        });
 
         allMarkers.push(marker);
       });
-    }
-
-    function setupPolylineListeners(polyline) {
-      google.maps.event.addListener(polyline.getPath(), 'set_at', () => savePolylineToFirebase(polyline));
-      google.maps.event.addListener(polyline.getPath(), 'insert_at', () => savePolylineToFirebase(polyline));
-      google.maps.event.addListener(polyline.getPath(), 'remove_at', () => savePolylineToFirebase(polyline));
-
-      polyline.addListener('rightclick', (event) => {
-        if (event.vertex !== undefined) {
-          polyline.getPath().removeAt(event.vertex);
-        } else {
-          if (confirm('Delete this line?')) {
-            removePolylineFromFirebase(polyline);
-            polyline.setMap(null);
-            allLines = allLines.filter(l => l !== polyline);
-          }
-        }
-      });
-    }
-
-    function savePolylineToFirebase(polyline) {
-      const path = polyline.getPath().getArray().map(latlng => ({
-        lat: latlng.lat(),
-        lng: latlng.lng()
-      }));
-      if (polyline.firebaseKey) {
-        db.ref('lines/' + polyline.firebaseKey).set({ path });
-      } else {
-        const newRef = db.ref('lines').push();
-        polyline.firebaseKey = newRef.key;
-        newRef.set({ path });
-      }
-    }
-
-    function removePolylineFromFirebase(polyline) {
-      if (polyline.firebaseKey) {
-        db.ref('lines/' + polyline.firebaseKey).remove();
-      }
-    }
-
-    function clearAllLinesFromMap() {
-      allLines.forEach(line => line.setMap(null));
-      allLines = [];
     }
 
     async function initMap() {
       map = new google.maps.Map(document.getElementById('map'), {
         zoom: 10,
         center: { lat: 31.963158, lng: 35.930359 },
-        styles: [ // Optional dark style
+        styles: [
           { elementType: 'geometry', stylers: [{ color: '#242f3e' }] },
           { elementType: 'labels.text.stroke', stylers: [{ color: '#242f3e' }] },
           { elementType: 'labels.text.fill', stylers: [{ color: '#746855' }] },
@@ -193,37 +332,57 @@
           strokeWeight: 3,
           clickable: true,
           editable: true,
+          draggable: true,
           zIndex: 1
         }
       });
       drawingManager.setMap(map);
 
-      // Load markers
+      // Press Escape to exit drawing mode
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          drawingManager.setDrawingMode(null);
+        }
+      });
+
       await loadMarkersFromSheet();
 
-      // Load lines from Firebase
       db.ref('lines').on('value', snapshot => {
         clearAllLinesFromMap();
         const lines = snapshot.val();
         if (!lines) return;
+
         Object.entries(lines).forEach(([key, lineData]) => {
           const polyline = new google.maps.Polyline({
             path: lineData.path,
             strokeColor: '#FFD700',
             strokeWeight: 3,
             editable: true,
+            draggable: true,
             map: map,
           });
           polyline.firebaseKey = key;
-          setupPolylineListeners(polyline);
+          polyline.labelText = lineData.label || 'Unnamed Line';
+
+          const label = createLabelForLine(polyline, polyline.labelText);
+
+          setupPolylineListeners(polyline, label);
+
           allLines.push(polyline);
+          allLabels.push(label);
         });
       });
 
       google.maps.event.addListener(drawingManager, 'polylinecomplete', polyline => {
         polyline.firebaseKey = null;
+        polyline.setOptions({ draggable: true, editable: true });
+
         allLines.push(polyline);
-        setupPolylineListeners(polyline);
+        polyline.labelText = 'New Line';
+        const label = createLabelForLine(polyline, polyline.labelText);
+        allLabels.push(label);
+
+        setupPolylineListeners(polyline, label);
         savePolylineToFirebase(polyline);
       });
     }
